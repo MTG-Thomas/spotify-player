@@ -410,6 +410,7 @@ To enable [fuzzy search](https://en.wikipedia.org/wiki/Approximate_string_matchi
 - `like`: Like currently playing track
 - `authenticate`: Authenticate the application
 - `playlist`: Playlist editing (new, delete, import, fork, etc)
+- `import`: Import local Spotify account data (`import history <paths>...` normalizes account-export listening history to JSON; add `--aggregate` for per-artist/per-album roll-ups and `--min-ms` to drop very short plays)
 
 For more details, run `spotify_player -h` or `spotify_player {command} -h`.
 

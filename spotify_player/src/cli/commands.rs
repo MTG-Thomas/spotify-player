@@ -29,6 +29,40 @@ pub fn init_get_subcommand() -> Command {
         ))
 }
 
+pub fn init_import_subcommand() -> Command {
+    Command::new("import")
+        .about("Import local Spotify account data")
+        .subcommand_required(true)
+        .subcommand(
+            Command::new("history")
+                .about(
+                    "Normalize Spotify account-export listening history (JSON) to JSON on stdout",
+                )
+                .arg(
+                    Arg::new("paths")
+                        .help(
+                            "History JSON files or directories (the account export ships several)",
+                        )
+                        .required(true)
+                        .num_args(1..)
+                        .value_parser(value_parser!(std::path::PathBuf)),
+                )
+                .arg(
+                    Arg::new("aggregate")
+                        .long("aggregate")
+                        .action(ArgAction::SetTrue)
+                        .help("Emit per-artist/per-album aggregates instead of play events"),
+                )
+                .arg(
+                    Arg::new("min-ms")
+                        .long("min-ms")
+                        .value_parser(value_parser!(u64))
+                        .default_value("0")
+                        .help("Drop plays shorter than this many milliseconds (e.g. 30000)"),
+                ),
+        )
+}
+
 fn init_playback_start_subcommand() -> Command {
     Command::new("start")
         .about("Start a new playback")

@@ -4,6 +4,7 @@ mod client;
 mod command;
 mod config;
 mod event;
+mod history;
 mod key;
 mod log_layer;
 #[cfg(feature = "media-control")]
