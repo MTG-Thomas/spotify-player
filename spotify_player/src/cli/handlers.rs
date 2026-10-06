@@ -8,7 +8,7 @@ use super::{
 use anyhow::{Context, Result};
 use clap::{ArgMatches, Id};
 use clap_complete::{generate, Shell};
-use std::net::UdpSocket;
+use std::{net::UdpSocket, path::PathBuf};
 
 fn receive_response(socket: &UdpSocket) -> Result<Response> {
     // read response from the server's socket, which can be split into
@@ -209,6 +209,10 @@ pub fn handle_cli_subcommand(cmd: &str, args: &ArgMatches) -> Result<()> {
             print_features();
             std::process::exit(0);
         }
+        "import" => {
+            handle_import_subcommand(args)?;
+            std::process::exit(0);
+        }
         _ => {}
     }
 
@@ -252,6 +256,36 @@ pub fn handle_cli_subcommand(cmd: &str, args: &ArgMatches) -> Result<()> {
             std::process::exit(0);
         }
     }
+}
+
+fn handle_import_subcommand(args: &ArgMatches) -> Result<()> {
+    let (cmd, args) = args.subcommand().expect("import subcommand is required");
+    match cmd {
+        "history" => {
+            let paths: Vec<PathBuf> = args
+                .get_many::<PathBuf>("paths")
+                .expect("at least one path is required")
+                .cloned()
+                .collect();
+            let min_ms = *args
+                .get_one::<u64>("min-ms")
+                .expect("min-ms should have a default value");
+            let plays = crate::history::filter_min_ms(crate::history::load_plays(&paths)?, min_ms);
+            let output = if args.get_flag("taste-profile") {
+                let top = *args
+                    .get_one::<usize>("top")
+                    .expect("top should have a default value");
+                serde_json::to_string(&crate::history::taste_profile(&plays, top))?
+            } else if args.get_flag("aggregate") {
+                serde_json::to_string(&crate::history::aggregate(&plays))?
+            } else {
+                serde_json::to_string(&plays)?
+            };
+            println!("{output}");
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
 }
 
 fn handle_playlist_subcommand(args: &ArgMatches) -> Result<Request> {
