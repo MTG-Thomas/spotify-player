@@ -3,6 +3,7 @@
 ## Table of Contents
 
 - [Introduction](#introduction)
+- [Listening history & agent setup](#listening-history--agent-setup)
 - [Examples](#examples)
 - [Installation](#installation)
 - [Authentication](#authentication)
@@ -45,6 +46,10 @@
 - Support [desktop notification](#notify).
 - Support running the application as [a daemon](#daemon)
 - Offer a wide range of [CLI commands](#cli-commands)
+
+## Listening history & agent setup
+
+This fork adds an offline workflow for feeding a Spotify **account data export** into agent tooling. `spotify_player import history --taste-profile <export-dir>` turns your extended streaming history into a taste profile (overall, last 90/365 days, and per-year top artists/albums); `--aggregate` emits per-artist/per-album roll-ups, and `--min-ms` drops very short plays. See [docs/listening-history.md](docs/listening-history.md) for the full export → profile → recommendation workflow and the helper scripts in [`contrib/listening-history/`](contrib/listening-history/).
 
 ## Examples
 
