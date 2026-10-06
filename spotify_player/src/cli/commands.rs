@@ -59,6 +59,20 @@ pub fn init_import_subcommand() -> Command {
                         .value_parser(value_parser!(u64))
                         .default_value("0")
                         .help("Drop plays shorter than this many milliseconds (e.g. 30000)"),
+                )
+                .arg(
+                    Arg::new("taste-profile")
+                        .long("taste-profile")
+                        .action(ArgAction::SetTrue)
+                        .conflicts_with("aggregate")
+                        .help("Emit a taste profile (overall, last 90/365 days, per-year top artists/albums)"),
+                )
+                .arg(
+                    Arg::new("top")
+                        .long("top")
+                        .value_parser(value_parser!(usize))
+                        .default_value("50")
+                        .help("Number of artists/albums per list in --taste-profile output"),
                 ),
         )
 }

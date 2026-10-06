@@ -271,7 +271,12 @@ fn handle_import_subcommand(args: &ArgMatches) -> Result<()> {
                 .get_one::<u64>("min-ms")
                 .expect("min-ms should have a default value");
             let plays = crate::history::filter_min_ms(crate::history::load_plays(&paths)?, min_ms);
-            let output = if args.get_flag("aggregate") {
+            let output = if args.get_flag("taste-profile") {
+                let top = *args
+                    .get_one::<usize>("top")
+                    .expect("top should have a default value");
+                serde_json::to_string(&crate::history::taste_profile(&plays, top))?
+            } else if args.get_flag("aggregate") {
                 serde_json::to_string(&crate::history::aggregate(&plays))?
             } else {
                 serde_json::to_string(&plays)?

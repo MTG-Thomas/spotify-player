@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Datelike, Duration, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
 };
@@ -72,6 +73,31 @@ pub struct HistoryAggregate {
     pub albums: Vec<AlbumAggregate>,
 }
 
+/// Top artists and albums within a slice of listening history.
+#[derive(Debug, Serialize)]
+pub struct TasteBlock {
+    pub plays: u64,
+    pub ms_played: u64,
+    pub top_artists: Vec<ArtistAggregate>,
+    pub top_albums: Vec<AlbumAggregate>,
+}
+
+/// Recent-window roll-ups relative to the latest play.
+#[derive(Debug, Serialize)]
+pub struct TasteWindows {
+    pub last_90d: TasteBlock,
+    pub last_365d: TasteBlock,
+}
+
+/// A listening-taste profile for downstream recommendation tooling.
+#[derive(Debug, Serialize)]
+pub struct TasteProfile {
+    pub latest_play: Option<String>,
+    pub overall: TasteBlock,
+    pub windows: TasteWindows,
+    pub by_year: BTreeMap<String, TasteBlock>,
+}
+
 /// Loads and normalizes listening history from export files or directories.
 ///
 /// Each path may be a JSON file or a directory containing JSON files (the
@@ -94,6 +120,134 @@ pub fn filter_min_ms(plays: Vec<ImportedPlay>, min_ms: u64) -> Vec<ImportedPlay>
         .into_iter()
         .filter(|p| p.ms_played >= min_ms)
         .collect()
+}
+
+/// Builds a taste profile (overall, last 90/365 days, and per-year top lists).
+///
+/// Each list is truncated to the `top` most-listened artists and albums. Recent
+/// windows are measured backwards from the latest play in the set.
+pub fn taste_profile(plays: &[ImportedPlay], top: usize) -> TasteProfile {
+    let parsed: Vec<Option<DateTime<Utc>>> = plays
+        .iter()
+        .map(|play| play.played_at.as_deref().and_then(parse_played_at))
+        .collect();
+    let latest = parsed.iter().flatten().max().copied();
+
+    let overall = taste_block(plays.iter(), top);
+
+    let (last_90d, last_365d) = match latest {
+        Some(latest) => (
+            taste_block(
+                window_iter(plays, &parsed, latest - Duration::days(90)),
+                top,
+            ),
+            taste_block(
+                window_iter(plays, &parsed, latest - Duration::days(365)),
+                top,
+            ),
+        ),
+        None => (
+            taste_block(std::iter::empty::<&ImportedPlay>(), top),
+            taste_block(std::iter::empty::<&ImportedPlay>(), top),
+        ),
+    };
+
+    let mut by_year: BTreeMap<String, TasteBlock> = BTreeMap::new();
+    let years: std::collections::BTreeSet<i32> =
+        parsed.iter().flatten().map(Datelike::year).collect();
+    for year in years {
+        let iter = plays
+            .iter()
+            .enumerate()
+            .filter_map(|(i, play)| parsed[i].filter(|ts| ts.year() == year).map(|_| play));
+        by_year.insert(year.to_string(), taste_block(iter, top));
+    }
+
+    TasteProfile {
+        latest_play: latest.map(|ts| ts.to_rfc3339()),
+        overall,
+        windows: TasteWindows {
+            last_90d,
+            last_365d,
+        },
+        by_year,
+    }
+}
+
+fn window_iter<'a>(
+    plays: &'a [ImportedPlay],
+    parsed: &'a [Option<DateTime<Utc>>],
+    cutoff: DateTime<Utc>,
+) -> impl Iterator<Item = &'a ImportedPlay> {
+    plays
+        .iter()
+        .enumerate()
+        .filter_map(move |(i, play)| parsed[i].filter(|ts| *ts >= cutoff).map(|_| play))
+}
+
+fn taste_block<'a>(plays: impl Iterator<Item = &'a ImportedPlay>, top: usize) -> TasteBlock {
+    let mut artist_map: HashMap<String, (u64, u64)> = HashMap::new();
+    let mut album_map: HashMap<(String, String), (u64, u64)> = HashMap::new();
+    let mut total_plays = 0u64;
+    let mut total_ms_played = 0u64;
+
+    for play in plays {
+        total_plays += 1;
+        total_ms_played += play.ms_played;
+
+        for artist in &play.track.artists {
+            let entry = artist_map.entry(artist.name.clone()).or_default();
+            entry.0 += 1;
+            entry.1 += play.ms_played;
+        }
+
+        if let Some(album) = &play.track.album {
+            let artist = play
+                .track
+                .artists
+                .first()
+                .map_or_else(String::new, |a| a.name.clone());
+            let entry = album_map.entry((album.name.clone(), artist)).or_default();
+            entry.0 += 1;
+            entry.1 += play.ms_played;
+        }
+    }
+
+    let mut top_artists: Vec<ArtistAggregate> = artist_map
+        .into_iter()
+        .map(|(name, (plays, ms_played))| ArtistAggregate {
+            name,
+            plays,
+            ms_played,
+        })
+        .collect();
+    top_artists.sort_by(|a, b| b.ms_played.cmp(&a.ms_played).then(b.plays.cmp(&a.plays)));
+    top_artists.truncate(top);
+
+    let mut top_albums: Vec<AlbumAggregate> = album_map
+        .into_iter()
+        .map(|((name, artist), (plays, ms_played))| AlbumAggregate {
+            name,
+            artist,
+            plays,
+            ms_played,
+        })
+        .collect();
+    top_albums.sort_by(|a, b| b.ms_played.cmp(&a.ms_played).then(b.plays.cmp(&a.plays)));
+    top_albums.truncate(top);
+
+    TasteBlock {
+        plays: total_plays,
+        ms_played: total_ms_played,
+        top_artists,
+        top_albums,
+    }
+}
+
+fn parse_played_at(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|ts| ts.with_timezone(&Utc))
 }
 
 /// Rolls up plays by artist and album, sorted by total listened time.
@@ -415,5 +569,43 @@ mod tests {
         assert_eq!(agg.albums[0].artist, "A");
         assert_eq!(agg.albums[0].plays, 2);
         assert_eq!(agg.albums[0].ms_played, 2000);
+    }
+
+    #[test]
+    fn builds_taste_profile_windows_and_years() {
+        let plays = entries(json!([
+            {"ts": "2026-10-01T00:00:00Z", "ms_played": 1000, "master_metadata_track_name": "A", "master_metadata_album_artist_name": "X", "master_metadata_album_album_name": "AX", "spotify_track_uri": "spotify:track:a"},
+            {"ts": "2026-06-01T00:00:00Z", "ms_played": 2000, "master_metadata_track_name": "B", "master_metadata_album_artist_name": "Y", "master_metadata_album_album_name": "BY", "spotify_track_uri": "spotify:track:b"},
+            {"ts": "2024-01-01T00:00:00Z", "ms_played": 3000, "master_metadata_track_name": "C", "master_metadata_album_artist_name": "X", "master_metadata_album_album_name": "CX", "spotify_track_uri": "spotify:track:c"}
+        ]));
+
+        let profile = taste_profile(&plays, 50);
+
+        assert_eq!(profile.overall.plays, 3);
+        assert_eq!(profile.overall.ms_played, 6000);
+        assert_eq!(
+            profile.latest_play.as_deref(),
+            Some("2026-10-01T00:00:00+00:00")
+        );
+        assert_eq!(profile.windows.last_90d.plays, 1);
+        assert_eq!(profile.windows.last_365d.plays, 2);
+        assert_eq!(profile.by_year.len(), 2);
+        assert_eq!(profile.by_year["2026"].plays, 2);
+        assert_eq!(profile.by_year["2024"].plays, 1);
+        assert_eq!(profile.overall.top_artists[0].name, "X");
+        assert_eq!(profile.overall.top_artists[0].ms_played, 4000);
+    }
+
+    #[test]
+    fn taste_profile_truncates_lists() {
+        let plays = entries(json!([
+            {"endTime": "2023-05-01 14:30", "artistName": "A", "trackName": "T1", "msPlayed": 1000},
+            {"endTime": "2023-05-02 14:30", "artistName": "B", "trackName": "T2", "msPlayed": 2000}
+        ]));
+
+        let profile = taste_profile(&plays, 1);
+
+        assert_eq!(profile.overall.top_artists.len(), 1);
+        assert_eq!(profile.overall.top_artists[0].name, "B");
     }
 }
