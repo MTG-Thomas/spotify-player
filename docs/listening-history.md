@@ -125,3 +125,15 @@ The importer produces the data; the "engine" is the loop an agent runs over it:
 ## 4. Helper scripts
 
 See [`contrib/listening-history/`](../contrib/listening-history/) for the small stdlib-only Python helpers used above (`played_sets.py`, `check_candidates.py`, `report.py`).
+
+## 5. Bootstrapping with an agent
+
+The whole workflow is designed to be driven by a coding agent from a fresh checkout, with no interactive steps:
+
+1. `cargo build --release` (or use a release binary).
+2. `spotify_player import history --taste-profile "$EXPORT" > out/taste_profile.json` — read `overall` for identity and `windows.last_90d` / `windows.last_365d` for current taste.
+3. `spotify_player import history --aggregate "$EXPORT" > out/aggregate_all.json`, then `python contrib/listening-history/played_sets.py out/aggregate_all.json out/` for the already-played set.
+4. Research current-year releases (the only online step), write them to `candidates.tsv`, and run `check_candidates.py` to drop anything already played.
+5. Rank the remainder against the profile and report a shortlist with a reason per pick; `report.py` renders the profile for a human-readable summary.
+
+The only inputs an agent needs are the export path and a current-release source; everything else runs offline.

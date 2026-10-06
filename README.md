@@ -51,6 +51,8 @@
 
 This fork adds an offline workflow for feeding a Spotify **account data export** into agent tooling. `spotify_player import history --taste-profile <export-dir>` turns your extended streaming history into a taste profile (overall, last 90/365 days, and per-year top artists/albums); `--aggregate` emits per-artist/per-album roll-ups, and `--min-ms` drops very short plays. See [docs/listening-history.md](docs/listening-history.md) for the full export → profile → recommendation workflow and the helper scripts in [`contrib/listening-history/`](contrib/listening-history/).
 
+**Bootstrapping via an agent.** The workflow is built to be driven by a coding agent from a fresh checkout: build the CLI, point `import history --taste-profile` at the export, derive the already-played set (`--aggregate` + `played_sets.py`), then research current releases and filter them with `check_candidates.py` into a ranked shortlist. Everything except the release research runs offline — hand an agent [docs/listening-history.md](docs/listening-history.md) and it can bootstrap the rest.
+
 ## Examples
 
 A demo of `spotify_player` `v0.5.0-pre-release` on [youtube](https://www.youtube.com/watch/Jbfe9GLNWbA) or on [asciicast](https://asciinema.org/a/446913):
