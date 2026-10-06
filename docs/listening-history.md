@@ -137,3 +137,54 @@ The whole workflow is designed to be driven by a coding agent from a fresh check
 5. Rank the remainder against the profile and report a shortlist with a reason per pick; `report.py` renders the profile for a human-readable summary.
 
 The only inputs an agent needs are the export path and a current-release source; everything else runs offline.
+
+## 6. Keeping the list current (`import sync`)
+
+The account export is a point-in-time snapshot. To keep the store current without re-requesting an export, run `import sync` on a schedule. It fetches the Web API's recently-played history (with `played_at`) through the running client and appends new plays to `<store>/plays.jsonl`.
+
+This needs a running `spotify_player` client. On a headless Linux box, run it as a daemon so the CLI can reach it over the client socket (requires the `daemon` feature):
+
+```sh
+spotify_player --daemon
+```
+
+Then, from cron (every 30 minutes):
+
+```cron
+*/30 * * * * /usr/local/bin/spotify_player import sync --store "$HOME/.local/share/spotify-player/store" --json >> "$HOME/.local/share/spotify-player/sync.log" 2>&1
+```
+
+Rebuild the profile from the store at any time:
+
+```sh
+spotify_player import history --taste-profile "$STORE/plays.jsonl" > taste_profile.json
+```
+
+Notes:
+
+- **Cadence matters.** Spotify exposes only the ~50 most recent plays and the cursors do not page past them, so the interval must be short enough that fewer than 50 plays occur between runs. Every 15–30 minutes is safe; hourly is usually fine; daily can lose plays. Re-request the account export periodically (e.g. quarterly) to backfill gaps.
+- **`ms_played` is a proxy.** The recently-played API has no play-duration field, so synced plays record the track's full `duration_ms` as `ms_played`. Export-sourced rows stay time-accurate; treat synced rows as count-leaning.
+- **Idempotent.** Plays at or before the store's latest `played_at` are dropped, and the rest are de-duplicated by `(played_at, track)`, so re-running is safe.
+- The store is a single append-only `plays.jsonl`; point the importer at that file directly (as above) rather than the whole directory.
+
+## 7. Scheduled recommendations (Hermes)
+
+With a current store and a profile, a persistent harness can emit recommendations on a schedule, one lane ("genre direction") at a time. The job is the loop in §3 with a fixed lane and a delivery target:
+
+```yaml
+# sketch — adapt to the harness's job schema
+name: weekly-recommendations
+schedule: "0 9 * * 1"            # Mondays 09:00
+steps:
+  - run: spotify_player import sync --store "$STORE" --json
+  - run: spotify_player import history --taste-profile "$STORE/plays.jsonl" > profile.json
+  - run: spotify_player import history --aggregate "$STORE/plays.jsonl" > aggregate.json
+  - run: python contrib/listening-history/played_sets.py aggregate.json out/
+  - agent: |
+      Pick a lane from lanes.json (rotate, weighting by feedback.json), read profile.json,
+      research current releases for that lane, write candidates, drop any already in
+      out/played_albums.txt, rank the rest by fit to profile.json windows.last_90d, and
+      deliver the top N with a one-line reason each. Append the batch to recommended.json.
+```
+
+Persist between runs: the play store, `lanes.json` (lane → seed artists), `recommended.json` (already-suggested picks, to avoid repeats), and `feedback.json` (likes/dislikes, to weight lanes). Since Spotify's `genres` field is deprecated and often empty, define lanes from Last.fm tags or a curated artist→lane map rather than the API.

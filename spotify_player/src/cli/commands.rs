@@ -75,6 +75,29 @@ pub fn init_import_subcommand() -> Command {
                         .help("Number of artists/albums per list in --taste-profile output"),
                 ),
         )
+        .subcommand(
+            Command::new("sync")
+                .about("Fetch recently-played plays from a running client into a local store")
+                .arg(
+                    Arg::new("store")
+                        .long("store")
+                        .required(true)
+                        .value_parser(value_parser!(std::path::PathBuf))
+                        .help("Store directory; plays are appended to <store>/plays.jsonl"),
+                )
+                .arg(
+                    Arg::new("after")
+                        .long("after")
+                        .value_parser(value_parser!(i64))
+                        .help("Unix-ms watermark override; defaults to the store's latest play"),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .action(ArgAction::SetTrue)
+                        .help("Print a machine-readable sync summary"),
+                ),
+        )
 }
 
 fn init_playback_start_subcommand() -> Command {

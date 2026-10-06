@@ -417,7 +417,7 @@ To enable [fuzzy search](https://en.wikipedia.org/wiki/Approximate_string_matchi
 - `like`: Like currently playing track
 - `authenticate`: Authenticate the application
 - `playlist`: Playlist editing (new, delete, import, fork, etc)
-- `import`: Import local Spotify account data (`import history <paths>...` normalizes account-export listening history to JSON; `--aggregate` for per-artist/per-album roll-ups, `--taste-profile` for overall/recent/per-year top lists, and `--min-ms` to drop very short plays). See [docs/listening-history.md](docs/listening-history.md) for the full export + recommendation workflow.
+- `import`: Import local Spotify account data (`import history <paths>...` normalizes account-export listening history to JSON; `--aggregate` for per-artist/per-album roll-ups, `--taste-profile` for overall/recent/per-year top lists, and `--min-ms` to drop very short plays). `import sync` keeps a local store current from the Web API's recently-played history. See [docs/listening-history.md](docs/listening-history.md) for the full export + sync + recommendation workflow.
 
 For more details, run `spotify_player -h` or `spotify_player {command} -h`.
 

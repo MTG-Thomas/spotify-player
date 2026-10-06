@@ -3,8 +3,9 @@ use chrono::{DateTime, Datelike, Duration, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -319,6 +320,91 @@ pub fn aggregate(plays: &[ImportedPlay]) -> HistoryAggregate {
     }
 }
 
+/// Summary of an `import sync` run.
+#[derive(Debug, Serialize)]
+pub struct SyncSummary {
+    pub added: usize,
+    pub skipped: usize,
+    pub total: usize,
+    pub latest_play: Option<String>,
+}
+
+/// Appends fetched plays to `<store_dir>/plays.jsonl`.
+///
+/// Plays at or before the store's latest `played_at` are dropped, and the rest
+/// are de-duplicated by `(played_at, track)`. Returns a summary of the run.
+pub fn append_sync(store_dir: &Path, new_plays: Vec<ImportedPlay>) -> Result<SyncSummary> {
+    fs::create_dir_all(store_dir)
+        .with_context(|| format!("create store directory {}", store_dir.display()))?;
+    let store_file = store_dir.join("plays.jsonl");
+
+    let existing = if store_file.exists() {
+        parse_file(&store_file)?
+    } else {
+        Vec::new()
+    };
+
+    let mut watermark = existing
+        .iter()
+        .filter_map(|play| play.played_at.clone())
+        .max();
+    let mut keys: HashSet<(String, String)> = existing.iter().filter_map(play_key).collect();
+
+    let mut added_plays = Vec::new();
+    let mut skipped = 0usize;
+    for play in new_plays {
+        if let (Some(ts), Some(current)) = (play.played_at.as_ref(), watermark.as_ref()) {
+            if ts <= current {
+                skipped += 1;
+                continue;
+            }
+        }
+        if let Some(key) = play_key(&play) {
+            if !keys.insert(key) {
+                skipped += 1;
+                continue;
+            }
+        }
+        if let Some(ts) = &play.played_at {
+            if watermark.as_ref().is_none_or(|current| ts > current) {
+                watermark = Some(ts.clone());
+            }
+        }
+        added_plays.push(play);
+    }
+
+    if !added_plays.is_empty() {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store_file)
+            .with_context(|| format!("open store file {}", store_file.display()))?;
+        for play in &added_plays {
+            writeln!(file, "{}", serde_json::to_string(play)?)?;
+        }
+    }
+
+    Ok(SyncSummary {
+        added: added_plays.len(),
+        skipped,
+        total: existing.len() + added_plays.len(),
+        latest_play: watermark,
+    })
+}
+
+fn play_key(play: &ImportedPlay) -> Option<(String, String)> {
+    let played_at = play.played_at.clone()?;
+    let track = play.track.id.clone().unwrap_or_else(|| {
+        let artist = play
+            .track
+            .artists
+            .first()
+            .map_or("", |artist| artist.name.as_str());
+        format!("{}::{}", play.track.name, artist)
+    });
+    Some((played_at, track))
+}
+
 fn collect_json_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for path in paths {
@@ -329,7 +415,7 @@ fn collect_json_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
                 fs::read_dir(path).with_context(|| format!("read directory {}", path.display()))?
             {
                 let candidate = entry?.path();
-                if is_json(&candidate) {
+                if is_history_file(&candidate) {
                     files.push(candidate);
                 }
             }
@@ -341,14 +427,23 @@ fn collect_json_files(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn is_json(path: &Path) -> bool {
+fn is_history_file(path: &Path) -> bool {
     path.extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("jsonl"))
 }
 
 fn parse_file(path: &Path) -> Result<Vec<ImportedPlay>> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("read history file {}", path.display()))?;
+
+    // `.jsonl` stores one play per line; `.json` files are arrays.
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
+    {
+        return Ok(parse_jsonl(&content));
+    }
+
     let value: Value = serde_json::from_str(&content)
         .with_context(|| format!("parse JSON from {}", path.display()))?;
     let entries = value
@@ -357,13 +452,26 @@ fn parse_file(path: &Path) -> Result<Vec<ImportedPlay>> {
     Ok(parse_entries(entries))
 }
 
+fn parse_jsonl(content: &str) -> Vec<ImportedPlay> {
+    content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|value| parse_entry(&value))
+        .collect()
+}
+
 fn parse_entries(entries: &[Value]) -> Vec<ImportedPlay> {
     entries.iter().filter_map(parse_entry).collect()
 }
 
 fn parse_entry(entry: &Value) -> Option<ImportedPlay> {
-    // Extended streaming history uses these fields; the basic history uses `endTime`/`artistName`.
-    if entry.get("master_metadata_track_name").is_some() || entry.get("spotify_track_uri").is_some()
+    // Normalized store rows (`import sync`) use `played_at` + `track`; the
+    // extended export uses `master_metadata_*`; the basic export uses `endTime`.
+    if entry.get("played_at").is_some() || entry.get("track").is_some() {
+        parse_normalized(entry)
+    } else if entry.get("master_metadata_track_name").is_some()
+        || entry.get("spotify_track_uri").is_some()
     {
         parse_extended(entry)
     } else if entry.get("endTime").is_some() || entry.get("artistName").is_some() {
@@ -371,6 +479,48 @@ fn parse_entry(entry: &Value) -> Option<ImportedPlay> {
     } else {
         None
     }
+}
+
+fn parse_normalized(entry: &Value) -> Option<ImportedPlay> {
+    let track = entry.get("track")?;
+    let name = track.get("name")?.as_str()?.to_string();
+    let artists = track
+        .get("artists")
+        .and_then(Value::as_array)
+        .map(|artists| {
+            artists
+                .iter()
+                .filter_map(|artist| artist.get("name").and_then(Value::as_str))
+                .map(|name| ImportedArtist {
+                    id: None,
+                    name: name.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let album = track
+        .get("album")
+        .and_then(|album| album.get("name"))
+        .and_then(Value::as_str)
+        .map(|name| ImportedAlbum {
+            id: None,
+            name: name.to_string(),
+        });
+
+    Some(ImportedPlay {
+        played_at: entry
+            .get("played_at")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        ms_played: entry.get("ms_played").and_then(Value::as_u64).unwrap_or(0),
+        skipped: entry.get("skipped").and_then(Value::as_bool),
+        track: ImportedTrack {
+            id: track.get("id").and_then(Value::as_str).map(str::to_string),
+            name,
+            artists,
+            album,
+        },
+    })
 }
 
 fn parse_extended(entry: &Value) -> Option<ImportedPlay> {
@@ -607,5 +757,40 @@ mod tests {
 
         assert_eq!(profile.overall.top_artists.len(), 1);
         assert_eq!(profile.overall.top_artists[0].name, "B");
+    }
+
+    #[test]
+    fn append_sync_dedups_and_advances_watermark() {
+        let dir =
+            std::env::temp_dir().join(format!("spotify_player_sync_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let first = entries(json!([
+            {"ts": "2026-10-01T10:00:00Z", "ms_played": 1000, "master_metadata_track_name": "A", "master_metadata_album_artist_name": "X", "master_metadata_album_album_name": "AX", "spotify_track_uri": "spotify:track:a"},
+            {"ts": "2026-10-01T11:00:00Z", "ms_played": 1000, "master_metadata_track_name": "B", "master_metadata_album_artist_name": "X", "master_metadata_album_album_name": "AX", "spotify_track_uri": "spotify:track:b"}
+        ]));
+        let summary = append_sync(&dir, first).expect("first sync");
+        assert_eq!(summary.added, 2);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.total, 2);
+        assert_eq!(
+            summary.latest_play.as_deref(),
+            Some("2026-10-01T11:00:00+00:00")
+        );
+
+        // B overlaps (same played_at + track) and is dropped; C is new.
+        let second = entries(json!([
+            {"ts": "2026-10-01T11:00:00Z", "ms_played": 1000, "master_metadata_track_name": "B", "master_metadata_album_artist_name": "X", "master_metadata_album_album_name": "AX", "spotify_track_uri": "spotify:track:b"},
+            {"ts": "2026-10-01T12:00:00Z", "ms_played": 1000, "master_metadata_track_name": "C", "master_metadata_album_artist_name": "Y", "master_metadata_album_album_name": "CY", "spotify_track_uri": "spotify:track:c"}
+        ]));
+        let summary = append_sync(&dir, second).expect("second sync");
+        assert_eq!(summary.added, 1);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.total, 3);
+
+        let plays = load_plays(&[dir.join("plays.jsonl")]).expect("load store");
+        assert_eq!(plays.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

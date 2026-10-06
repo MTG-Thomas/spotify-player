@@ -50,12 +50,28 @@ enum ItemId {
 pub enum GetRequest {
     Key(Key),
     Item(ItemType, IdOrName),
+    RecentlyPlayed { after: Option<i64> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum IdOrName {
     Id(String),
     Name(String),
+}
+
+/// A recently-played item exchanged with the client over the CLI socket.
+///
+/// The Web API's recently-played response carries no played-duration field, so
+/// `duration_ms` (the track's full length) is a proxy for `ms_played` when the
+/// play is written to the local sync store.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncPlay {
+    pub played_at: String,
+    pub track_id: Option<String>,
+    pub track_name: String,
+    pub artists: Vec<String>,
+    pub album: Option<String>,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, clap::ValueEnum, Clone, Copy)]

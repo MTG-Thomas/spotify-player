@@ -2,7 +2,7 @@ use crate::{auth::AuthConfig, client};
 
 use super::{
     config, init_cli, start_socket, AlbumId, Command, ContextType, EditAction, GetRequest,
-    IdOrName, ItemType, Key, PlaylistCommand, PlaylistId, Request, Response, TrackId,
+    IdOrName, ItemType, Key, PlaylistCommand, PlaylistId, Request, Response, SyncPlay, TrackId,
     MAX_REQUEST_SIZE,
 };
 use anyhow::{Context, Result};
@@ -209,7 +209,8 @@ pub fn handle_cli_subcommand(cmd: &str, args: &ArgMatches) -> Result<()> {
             print_features();
             std::process::exit(0);
         }
-        "import" => {
+        "import" if args.subcommand_name() != Some("sync") => {
+            // `import history` is local; `import sync` talks to the client below.
             handle_import_subcommand(args)?;
             std::process::exit(0);
         }
@@ -222,6 +223,7 @@ pub fn handle_cli_subcommand(cmd: &str, args: &ArgMatches) -> Result<()> {
     // construct a socket request based on the CLI command and its arguments
     let request = match cmd {
         "get" => handle_get_subcommand(args),
+        "import" => handle_import_sync_request(args),
         "playback" => handle_playback_subcommand(args)?,
         "playlist" => handle_playlist_subcommand(args)?,
         "connect" => Request::Connect(get_id_or_name(args)),
@@ -252,7 +254,11 @@ pub fn handle_cli_subcommand(cmd: &str, args: &ArgMatches) -> Result<()> {
             std::process::exit(1);
         }
         Response::Ok(data) => {
-            println!("{}", String::from_utf8_lossy(&data).replace("\\n", "\n"));
+            if cmd == "import" {
+                handle_import_sync_response(args, &data)?;
+            } else {
+                println!("{}", String::from_utf8_lossy(&data).replace("\\n", "\n"));
+            }
             std::process::exit(0);
         }
     }
@@ -286,6 +292,59 @@ fn handle_import_subcommand(args: &ArgMatches) -> Result<()> {
         _ => unreachable!(),
     }
     Ok(())
+}
+
+fn handle_import_sync_request(args: &ArgMatches) -> Request {
+    let (_, sync_args) = args.subcommand().expect("import subcommand is required");
+    let after = sync_args.get_one::<i64>("after").copied();
+    Request::Get(GetRequest::RecentlyPlayed { after })
+}
+
+fn handle_import_sync_response(args: &ArgMatches, data: &[u8]) -> Result<()> {
+    let (_, sync_args) = args.subcommand().expect("import subcommand is required");
+    let store = sync_args
+        .get_one::<PathBuf>("store")
+        .expect("store is required");
+    let json = sync_args.get_flag("json");
+
+    let plays: Vec<SyncPlay> =
+        serde_json::from_slice(data).context("parse recently-played response")?;
+    let imported: Vec<crate::history::ImportedPlay> =
+        plays.into_iter().map(sync_play_to_imported).collect();
+    let summary = crate::history::append_sync(store, imported)?;
+
+    if json {
+        println!("{}", serde_json::to_string(&summary)?);
+    } else {
+        println!(
+            "sync: added {}, skipped {}, total {} (latest {})",
+            summary.added,
+            summary.skipped,
+            summary.total,
+            summary.latest_play.as_deref().unwrap_or("-"),
+        );
+    }
+    Ok(())
+}
+
+fn sync_play_to_imported(play: SyncPlay) -> crate::history::ImportedPlay {
+    crate::history::ImportedPlay {
+        played_at: Some(play.played_at),
+        ms_played: play.duration_ms,
+        skipped: None,
+        track: crate::history::ImportedTrack {
+            id: play.track_id,
+            name: play.track_name,
+            artists: play
+                .artists
+                .into_iter()
+                .map(|name| crate::history::ImportedArtist { id: None, name })
+                .collect(),
+            album: play
+                .album
+                .map(|name| crate::history::ImportedAlbum { id: None, name }),
+        },
+    }
 }
 
 fn handle_playlist_subcommand(args: &ArgMatches) -> Result<Request> {
