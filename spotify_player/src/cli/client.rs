@@ -27,7 +27,7 @@ use rspotify::{
 
 use super::{
     Command, Deserialize, EditAction, GetRequest, IdOrName, ItemId, ItemType, Key, PlaylistCommand,
-    Response, Serialize, MAX_REQUEST_SIZE,
+    Response, Serialize, SyncPlay, MAX_REQUEST_SIZE,
 };
 
 pub async fn start_socket(
@@ -139,6 +139,9 @@ async fn handle_socket_request(
         Request::Get(GetRequest::Item(item_type, id_or_name)) => {
             handle_get_item_request(client, item_type, id_or_name).await
         }
+        Request::Get(GetRequest::RecentlyPlayed { after }) => {
+            handle_recently_played_request(client, after).await
+        }
         Request::Playback(command) => {
             handle_playback_request(client, state, command).await?;
             Ok(Vec::new())
@@ -237,6 +240,29 @@ async fn handle_get_key_request(
             serde_json::to_vec(&queue)?
         }
     })
+}
+
+/// Fetch the current user's recently-played history for `import sync`.
+async fn handle_recently_played_request(client: &AppClient, after: Option<i64>) -> Result<Vec<u8>> {
+    let histories = client.current_user_recently_played_history(after).await?;
+    let plays: Vec<SyncPlay> = histories.into_iter().map(play_history_to_sync).collect();
+    Ok(serde_json::to_vec(&plays)?)
+}
+
+fn play_history_to_sync(history: rspotify::model::PlayHistory) -> SyncPlay {
+    SyncPlay {
+        played_at: history.played_at.to_rfc3339(),
+        track_id: history.track.id.as_ref().map(|id| id.id().to_string()),
+        track_name: history.track.name,
+        artists: history
+            .track
+            .artists
+            .into_iter()
+            .map(|artist| artist.name)
+            .collect(),
+        album: Some(history.track.album.name),
+        duration_ms: history.track.duration.num_milliseconds().max(0) as u64,
+    }
 }
 
 /// Get a Spotify item's ID from its `IdOrName` representation

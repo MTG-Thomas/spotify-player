@@ -923,6 +923,24 @@ impl AppClient {
         Ok(tracks)
     }
 
+    /// Get the recently-played play history (with `played_at`) for the current user.
+    ///
+    /// `after` is an optional Unix-ms watermark. Spotify exposes only the ~50 most
+    /// recent plays, so this bounds that window rather than reaching further back.
+    pub async fn current_user_recently_played_history(
+        &self,
+        after: Option<i64>,
+    ) -> Result<Vec<rspotify::model::PlayHistory>> {
+        let time_limit = after
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+            .map(rspotify::model::TimeLimits::After);
+
+        Ok(self
+            .current_user_recently_played(Some(50), time_limit)
+            .await?
+            .items)
+    }
+
     /// Get the top tracks of the current user
     pub async fn current_user_top_tracks(&self) -> Result<Vec<Track>> {
         let limit = config::get_config().app_config.top_tracks_limit;
